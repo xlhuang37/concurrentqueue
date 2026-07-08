@@ -379,6 +379,13 @@ struct ConcurrentQueueDefaultTraits
 	// that this limit is enforced at the block level (for performance reasons), i.e.
 	// it's rounded up to the nearest block size.
 	static const size_t MAX_SUBQUEUE_SIZE = details::const_numeric_max<size_t>::value;
+	
+	// The number of priority levels. Each producer's sub-queue lives at one level
+	// (level 0 being the highest priority); dequeue operations drain higher levels
+	// before lower ones. New producers start at level 0 and can be moved to lower
+	// levels with ConcurrentQueue::demote_producer. Must be at least 1; the default
+	// of 1 gives the classic single-level behaviour.
+	static const size_t PRIORITY_LEVELS = 1;
 
 	// The number of times to spin before sleeping when waiting on a semaphore.
 	// Recommended values are on the order of 1000-10000 unless the number of
@@ -434,14 +441,16 @@ class ConcurrentQueueTests;
 
 namespace details
 {
+	// Note: the list linkage lives in ConcurrentQueue::ProducerListNode, not here;
+	// a producer (sub-queue) is pointed to by exactly one list node at a time and
+	// can be detached from it (e.g. when moved to a different priority level).
 	struct ConcurrentQueueProducerTypelessBase
 	{
-		ConcurrentQueueProducerTypelessBase* next;
 		std::atomic<bool> inactive;
 		ProducerToken* token;
 		
 		ConcurrentQueueProducerTypelessBase()
-			: next(nullptr), inactive(false), token(nullptr)
+			: inactive(false), token(nullptr)
 		{
 		}
 	};
@@ -792,6 +801,7 @@ public:
 	static const size_t IMPLICIT_INITIAL_INDEX_SIZE = static_cast<size_t>(Traits::IMPLICIT_INITIAL_INDEX_SIZE);
 	static const size_t INITIAL_IMPLICIT_PRODUCER_HASH_SIZE = static_cast<size_t>(Traits::INITIAL_IMPLICIT_PRODUCER_HASH_SIZE);
 	static const std::uint32_t EXPLICIT_CONSUMER_CONSUMPTION_QUOTA_BEFORE_ROTATE = static_cast<std::uint32_t>(Traits::EXPLICIT_CONSUMER_CONSUMPTION_QUOTA_BEFORE_ROTATE);
+	static const size_t PRIORITY_LEVELS = static_cast<size_t>(Traits::PRIORITY_LEVELS);
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable: 4307)		// + integral constant overflow (that's what the ternary expression is for!)
@@ -811,6 +821,7 @@ public:
 	static_assert((IMPLICIT_INITIAL_INDEX_SIZE > 1) && !(IMPLICIT_INITIAL_INDEX_SIZE & (IMPLICIT_INITIAL_INDEX_SIZE - 1)), "Traits::IMPLICIT_INITIAL_INDEX_SIZE must be a power of 2 (and greater than 1)");
 	static_assert((INITIAL_IMPLICIT_PRODUCER_HASH_SIZE == 0) || !(INITIAL_IMPLICIT_PRODUCER_HASH_SIZE & (INITIAL_IMPLICIT_PRODUCER_HASH_SIZE - 1)), "Traits::INITIAL_IMPLICIT_PRODUCER_HASH_SIZE must be a power of 2");
 	static_assert(INITIAL_IMPLICIT_PRODUCER_HASH_SIZE == 0 || INITIAL_IMPLICIT_PRODUCER_HASH_SIZE >= 1, "Traits::INITIAL_IMPLICIT_PRODUCER_HASH_SIZE must be at least 1 (or 0 to disable implicit enqueueing)");
+	static_assert(PRIORITY_LEVELS >= 1, "Traits::PRIORITY_LEVELS must be at least 1");
 
 public:
 	// Creates a queue with at least `capacity` element slots; note that the
@@ -824,12 +835,14 @@ public:
 	// includes making the memory effects of construction visible, possibly with a
 	// memory barrier).
 	explicit ConcurrentQueue(size_t capacity = 32 * BLOCK_SIZE)
-		: producerListTail(nullptr),
-		producerCount(0),
+		: producerCount(0),
 		initialBlockPoolIndex(0),
 		nextExplicitConsumerId(0),
 		globalExplicitConsumerOffset(0)
 	{
+		for (auto& tail : producerListTails) {
+			tail.store(nullptr, std::memory_order_relaxed);
+		}
 		implicitProducerHashResizeInProgress.clear(std::memory_order_relaxed);
 		populate_initial_implicit_producer_hash();
 		populate_initial_block_list(capacity / BLOCK_SIZE + ((capacity & (BLOCK_SIZE - 1)) == 0 ? 0 : 1));
@@ -848,12 +861,14 @@ public:
 	// on the minimum number of elements you want available at any given
 	// time, and the maximum concurrent number of each type of producer.
 	ConcurrentQueue(size_t minCapacity, size_t maxExplicitProducers, size_t maxImplicitProducers)
-		: producerListTail(nullptr),
-		producerCount(0),
+		: producerCount(0),
 		initialBlockPoolIndex(0),
 		nextExplicitConsumerId(0),
 		globalExplicitConsumerOffset(0)
 	{
+		for (auto& tail : producerListTails) {
+			tail.store(nullptr, std::memory_order_relaxed);
+		}
 		implicitProducerHashResizeInProgress.clear(std::memory_order_relaxed);
 		populate_initial_implicit_producer_hash();
 		size_t blocks = (((minCapacity + BLOCK_SIZE - 1) / BLOCK_SIZE) - 1) * (maxExplicitProducers + 1) + 2 * (maxExplicitProducers + maxImplicitProducers);
@@ -870,15 +885,21 @@ public:
 	// This method is not thread safe.
 	~ConcurrentQueue()
 	{
-		// Destroy producers
-		auto ptr = producerListTail.load(std::memory_order_relaxed);
-		while (ptr != nullptr) {
-			auto next = ptr->next_prod();
-			if (ptr->token != nullptr) {
-				ptr->token->producer = nullptr;
+		// Destroy producers (and the list nodes pointing at them)
+		for (auto& tail : producerListTails) {
+			auto node = tail.load(std::memory_order_relaxed);
+			while (node != nullptr) {
+				auto next = node->next;
+				auto ptr = node->producer.load(std::memory_order_relaxed);
+				if (ptr != nullptr) {
+					if (ptr->token != nullptr) {
+						ptr->token->producer = nullptr;
+					}
+					destroy(ptr);
+				}
+				destroy(node);
+				node = next;
 			}
-			destroy(ptr);
-			ptr = next;
 		}
 		
 		// Destroy implicit producer hash tables
@@ -922,8 +943,7 @@ public:
 	// used with the destination queue (i.e. semantically they are moved along
 	// with the queue itself).
 	ConcurrentQueue(ConcurrentQueue&& other) MOODYCAMEL_NOEXCEPT
-		: producerListTail(other.producerListTail.load(std::memory_order_relaxed)),
-		producerCount(other.producerCount.load(std::memory_order_relaxed)),
+		: producerCount(other.producerCount.load(std::memory_order_relaxed)),
 		initialBlockPoolIndex(other.initialBlockPoolIndex.load(std::memory_order_relaxed)),
 		initialBlockPool(other.initialBlockPool),
 		initialBlockPoolSize(other.initialBlockPoolSize),
@@ -932,11 +952,14 @@ public:
 		globalExplicitConsumerOffset(other.globalExplicitConsumerOffset.load(std::memory_order_relaxed))
 	{
 		// Move the other one into this, and leave the other one as an empty queue
+		for (size_t i = 0; i != PRIORITY_LEVELS; ++i) {
+			producerListTails[i].store(other.producerListTails[i].load(std::memory_order_relaxed), std::memory_order_relaxed);
+			other.producerListTails[i].store(nullptr, std::memory_order_relaxed);
+		}
 		implicitProducerHashResizeInProgress.clear(std::memory_order_relaxed);
 		populate_initial_implicit_producer_hash();
 		swap_implicit_producer_hashes(other);
 		
-		other.producerListTail.store(nullptr, std::memory_order_relaxed);
 		other.producerCount.store(0, std::memory_order_relaxed);
 		other.nextExplicitConsumerId.store(0, std::memory_order_relaxed);
 		other.globalExplicitConsumerOffset.store(0, std::memory_order_relaxed);
@@ -977,7 +1000,9 @@ private:
 			return *this;
 		}
 		
-		details::swap_relaxed(producerListTail, other.producerListTail);
+		for (size_t i = 0; i != PRIORITY_LEVELS; ++i) {
+			details::swap_relaxed(producerListTails[i], other.producerListTails[i]);
+		}
 		details::swap_relaxed(producerCount, other.producerCount);
 		details::swap_relaxed(initialBlockPoolIndex, other.initialBlockPoolIndex);
 		std::swap(initialBlockPool, other.initialBlockPool);
@@ -1146,31 +1171,40 @@ public:
 	template<typename U>
 	bool try_dequeue(U& item)
 	{
-		// Instead of simply trying each producer in turn (which could cause needless contention on the first
-		// producer), we score them heuristically.
-		size_t nonEmptyCount = 0;
-		ProducerBase* best = nullptr;
-		size_t bestSize = 0;
-		for (auto ptr = producerListTail.load(std::memory_order_acquire); nonEmptyCount < 3 && ptr != nullptr; ptr = ptr->next_prod()) {
-			auto size = ptr->size_approx();
-			if (size > 0) {
-				if (size > bestSize) {
-					bestSize = size;
-					best = ptr;
+		// Traverse the priority levels from highest (level 0) to lowest; within a
+		// level, instead of simply trying each producer in turn (which could cause
+		// needless contention on the first producer), we score them heuristically.
+		for (size_t level = 0; level != PRIORITY_LEVELS; ++level) {
+			auto tail = producerListTails[level].load(std::memory_order_acquire);
+			size_t nonEmptyCount = 0;
+			ProducerBase* best = nullptr;
+			size_t bestSize = 0;
+			for (auto node = tail; nonEmptyCount < 3 && node != nullptr; node = node->next) {
+				auto ptr = node->producer.load(std::memory_order_acquire);
+				if (ptr == nullptr) {
+					continue;
 				}
-				++nonEmptyCount;
+				auto size = ptr->size_approx();
+				if (size > 0) {
+					if (size > bestSize) {
+						bestSize = size;
+						best = ptr;
+					}
+					++nonEmptyCount;
+				}
 			}
-		}
-		
-		// If there was at least one non-empty queue but it appears empty at the time
-		// we try to dequeue from it, we need to make sure every queue's been tried
-		if (nonEmptyCount > 0) {
-			if ((details::likely)(best->dequeue(item))) {
-				return true;
-			}
-			for (auto ptr = producerListTail.load(std::memory_order_acquire); ptr != nullptr; ptr = ptr->next_prod()) {
-				if (ptr != best && ptr->dequeue(item)) {
+			
+			// If there was at least one non-empty queue but it appears empty at the time
+			// we try to dequeue from it, we need to make sure every queue's been tried
+			if (nonEmptyCount > 0) {
+				if ((details::likely)(best->dequeue(item))) {
 					return true;
+				}
+				for (auto node = tail; node != nullptr; node = node->next) {
+					auto ptr = node->producer.load(std::memory_order_acquire);
+					if (ptr != nullptr && ptr != best && ptr->dequeue(item)) {
+						return true;
+					}
 				}
 			}
 		}
@@ -1189,9 +1223,12 @@ public:
 	template<typename U>
 	bool try_dequeue_non_interleaved(U& item)
 	{
-		for (auto ptr = producerListTail.load(std::memory_order_acquire); ptr != nullptr; ptr = ptr->next_prod()) {
-			if (ptr->dequeue(item)) {
-				return true;
+		for (size_t level = 0; level != PRIORITY_LEVELS; ++level) {
+			for (auto node = producerListTails[level].load(std::memory_order_acquire); node != nullptr; node = node->next) {
+				auto ptr = node->producer.load(std::memory_order_acquire);
+				if (ptr != nullptr && ptr->dequeue(item)) {
+					return true;
+				}
 			}
 		}
 		return false;
@@ -1209,8 +1246,11 @@ public:
 		// If you see that the global offset has changed, you must reset your consumption counter and move to your designated place
 		// If there's no items where you're supposed to be, keep moving until you find a producer with some items
 		// If the global offset has not changed but you've run out of items to consume, move over from your current position until you find an producer with something in it
+		// Rotation happens within a priority level; if a higher level appears
+		// non-empty, the token is re-resolved to it first.
 		
-		if (token.desiredProducer == nullptr || token.lastKnownGlobalOffset != globalExplicitConsumerOffset.load(std::memory_order_relaxed)) {
+		if (token.desiredProducer == nullptr || token.lastKnownGlobalOffset != globalExplicitConsumerOffset.load(std::memory_order_relaxed)
+			|| higher_level_appears_nonempty(static_cast<ProducerBase*>(token.currentProducer))) {
 			if (!update_current_producer_after_rotation(token)) {
 				return false;
 			}
@@ -1225,20 +1265,34 @@ public:
 			return true;
 		}
 		
-		auto tail = producerListTail.load(std::memory_order_acquire);
-		auto ptr = static_cast<ProducerBase*>(token.currentProducer)->next_prod();
-		if (ptr == nullptr) {
-			ptr = tail;
+		// Walk the rest of the current producer's level (with wraparound), then
+		// descend through the lower priority levels
+		auto currentNode = static_cast<ProducerBase*>(token.currentProducer)->listNode.load(std::memory_order_relaxed);
+		auto levelTail = producerListTails[currentNode->level].load(std::memory_order_acquire);
+		auto node = currentNode->next;
+		if (node == nullptr) {
+			node = levelTail;
 		}
-		while (ptr != static_cast<ProducerBase*>(token.currentProducer)) {
-			if (ptr->dequeue(item)) {
+		while (node != currentNode) {
+			auto ptr = node->producer.load(std::memory_order_acquire);
+			if (ptr != nullptr && ptr->dequeue(item)) {
 				token.currentProducer = ptr;
 				token.itemsConsumedFromCurrent = 1;
 				return true;
 			}
-			ptr = ptr->next_prod();
-			if (ptr == nullptr) {
-				ptr = tail;
+			node = node->next;
+			if (node == nullptr) {
+				node = levelTail;
+			}
+		}
+		for (size_t level = currentNode->level + 1; level != PRIORITY_LEVELS; ++level) {
+			for (node = producerListTails[level].load(std::memory_order_acquire); node != nullptr; node = node->next) {
+				auto ptr = node->producer.load(std::memory_order_acquire);
+				if (ptr != nullptr && ptr->dequeue(item)) {
+					token.currentProducer = ptr;
+					token.itemsConsumedFromCurrent = 1;
+					return true;
+				}
 			}
 		}
 		return false;
@@ -1253,10 +1307,16 @@ public:
 	size_t try_dequeue_bulk(It itemFirst, size_t max)
 	{
 		size_t count = 0;
-		for (auto ptr = producerListTail.load(std::memory_order_acquire); ptr != nullptr; ptr = ptr->next_prod()) {
-			count += ptr->dequeue_bulk(itemFirst, max - count);
-			if (count == max) {
-				break;
+		for (size_t level = 0; level != PRIORITY_LEVELS && count != max; ++level) {
+			for (auto node = producerListTails[level].load(std::memory_order_acquire); node != nullptr; node = node->next) {
+				auto ptr = node->producer.load(std::memory_order_acquire);
+				if (ptr == nullptr) {
+					continue;
+				}
+				count += ptr->dequeue_bulk(itemFirst, max - count);
+				if (count == max) {
+					break;
+				}
 			}
 		}
 		return count;
@@ -1270,7 +1330,8 @@ public:
 	template<typename It>
 	size_t try_dequeue_bulk(consumer_token_t& token, It itemFirst, size_t max)
 	{
-		if (token.desiredProducer == nullptr || token.lastKnownGlobalOffset != globalExplicitConsumerOffset.load(std::memory_order_relaxed)) {
+		if (token.desiredProducer == nullptr || token.lastKnownGlobalOffset != globalExplicitConsumerOffset.load(std::memory_order_relaxed)
+			|| higher_level_appears_nonempty(static_cast<ProducerBase*>(token.currentProducer))) {
 			if (!update_current_producer_after_rotation(token)) {
 				return 0;
 			}
@@ -1286,25 +1347,43 @@ public:
 		token.itemsConsumedFromCurrent += static_cast<std::uint32_t>(count);
 		max -= count;
 		
-		auto tail = producerListTail.load(std::memory_order_acquire);
-		auto ptr = static_cast<ProducerBase*>(token.currentProducer)->next_prod();
-		if (ptr == nullptr) {
-			ptr = tail;
+		// Walk the rest of the current producer's level (with wraparound), then
+		// descend through the lower priority levels
+		auto currentNode = static_cast<ProducerBase*>(token.currentProducer)->listNode.load(std::memory_order_relaxed);
+		auto levelTail = producerListTails[currentNode->level].load(std::memory_order_acquire);
+		auto node = currentNode->next;
+		if (node == nullptr) {
+			node = levelTail;
 		}
-		while (ptr != static_cast<ProducerBase*>(token.currentProducer)) {
-			auto dequeued = ptr->dequeue_bulk(itemFirst, max);
-			count += dequeued;
-			if (dequeued != 0) {
-				token.currentProducer = ptr;
-				token.itemsConsumedFromCurrent = static_cast<std::uint32_t>(dequeued);
+		while (node != currentNode && max != 0) {
+			auto ptr = node->producer.load(std::memory_order_acquire);
+			if (ptr != nullptr) {
+				auto dequeued = ptr->dequeue_bulk(itemFirst, max);
+				count += dequeued;
+				if (dequeued != 0) {
+					token.currentProducer = ptr;
+					token.itemsConsumedFromCurrent = static_cast<std::uint32_t>(dequeued);
+				}
+				max -= dequeued;
 			}
-			if (dequeued == max) {
-				break;
+			node = node->next;
+			if (node == nullptr) {
+				node = levelTail;
 			}
-			max -= dequeued;
-			ptr = ptr->next_prod();
-			if (ptr == nullptr) {
-				ptr = tail;
+		}
+		for (size_t level = currentNode->level + 1; level != PRIORITY_LEVELS && max != 0; ++level) {
+			for (node = producerListTails[level].load(std::memory_order_acquire); node != nullptr && max != 0; node = node->next) {
+				auto ptr = node->producer.load(std::memory_order_acquire);
+				if (ptr == nullptr) {
+					continue;
+				}
+				auto dequeued = ptr->dequeue_bulk(itemFirst, max);
+				count += dequeued;
+				if (dequeued != 0) {
+					token.currentProducer = ptr;
+					token.itemsConsumedFromCurrent = static_cast<std::uint32_t>(dequeued);
+				}
+				max -= dequeued;
 			}
 		}
 		return count;
@@ -1338,6 +1417,50 @@ public:
 	}
 	
 	
+	// Moves the given producer's sub-queue to a lower priority level (a higher
+	// level index). Items already enqueued move with it, and subsequent enqueues
+	// via the token go to the new level as well.
+	// Contract: the token must remain valid (not destroyed) for the duration of
+	// this call, and the same producer must not be demoted from multiple threads
+	// concurrently. Concurrent enqueues/dequeues are fine.
+	// Returns false if the token is invalid, if targetLevel is out of range or
+	// not strictly below the producer's current level, or if memory allocation
+	// for a new list node fails.
+	// Thread-safe (under the contract above).
+	bool demote_producer(producer_token_t const& token, size_t targetLevel)
+	{
+		if (token.producer == nullptr || targetLevel >= PRIORITY_LEVELS) {
+			return false;
+		}
+		auto producer = static_cast<ProducerBase*>(token.producer);
+		auto fromNode = producer->listNode.load(std::memory_order_relaxed);
+		if (targetLevel <= fromNode->level) {
+			return false;
+		}
+		
+		// Preference 1: claim a vacant node at the target level
+		auto node = try_claim_vacant_node(producer, targetLevel);
+		if (node != nullptr) {
+			fromNode->producer.store(nullptr, std::memory_order_release);
+			return true;
+		}
+		
+		// Preference 2: swap with an inactive sub-queue occupying a node at the
+		// target level (it moves into our old node, i.e. gets promoted)
+		if (try_swap_with_inactive_producer(producer, fromNode, targetLevel)) {
+			return true;
+		}
+		
+		// Preference 3: allocate a fresh node
+		node = allocate_and_push_node(producer, targetLevel);
+		if (node != nullptr) {
+			fromNode->producer.store(nullptr, std::memory_order_release);
+			return true;
+		}
+		return false;
+	}
+	
+	
 	// Returns an estimate of the total number of elements currently in the queue. This
 	// estimate is only accurate if the queue has completely stabilized before it is called
 	// (i.e. all enqueue and dequeue operations have completed and their memory effects are
@@ -1347,8 +1470,13 @@ public:
 	size_t size_approx() const
 	{
 		size_t size = 0;
-		for (auto ptr = producerListTail.load(std::memory_order_acquire); ptr != nullptr; ptr = ptr->next_prod()) {
-			size += ptr->size_approx();
+		for (size_t level = 0; level != PRIORITY_LEVELS; ++level) {
+			for (auto node = producerListTails[level].load(std::memory_order_acquire); node != nullptr; node = node->next) {
+				auto ptr = node->producer.load(std::memory_order_acquire);
+				if (ptr != nullptr) {
+					size += ptr->size_approx();
+				}
+			}
 		}
 		return size;
 	}
@@ -1372,6 +1500,8 @@ public:
 private:
 	friend struct ProducerToken;
 	friend struct ConsumerToken;
+	struct ProducerBase;
+	struct ProducerListNode;
 	struct ExplicitProducer;
 	friend struct ExplicitProducer;
 	struct ImplicitProducer;
@@ -1411,42 +1541,89 @@ private:
 		return producer == nullptr ? false : producer->ConcurrentQueue::ImplicitProducer::template enqueue_bulk<canAlloc>(itemFirst, count);
 	}
 	
-	inline bool update_current_producer_after_rotation(consumer_token_t& token)
+	// Returns true if any level with higher priority than the given producer's
+	// current level appears to hold items. Heuristic (like size_approx).
+	inline bool higher_level_appears_nonempty(ProducerBase* current) const
 	{
-		// Ah, there's been a rotation, figure out where we should be!
-		auto tail = producerListTail.load(std::memory_order_acquire);
-		if (token.desiredProducer == nullptr && tail == nullptr) {
-			return false;
-		}
-		auto prodCount = producerCount.load(std::memory_order_relaxed);
-		auto globalOffset = globalExplicitConsumerOffset.load(std::memory_order_relaxed);
-		if ((details::unlikely)(token.desiredProducer == nullptr)) {
-			// Aha, first time we're dequeueing anything.
-			// Figure out our local position
-			// Note: offset is from start, not end, but we're traversing from end -- subtract from count first
-			std::uint32_t offset = prodCount - 1 - (token.initialOffset % prodCount);
-			token.desiredProducer = tail;
-			for (std::uint32_t i = 0; i != offset; ++i) {
-				token.desiredProducer = static_cast<ProducerBase*>(token.desiredProducer)->next_prod();
-				if (token.desiredProducer == nullptr) {
-					token.desiredProducer = tail;
+		auto currentLevel = current->listNode.load(std::memory_order_relaxed)->level;
+		for (size_t level = 0; level != currentLevel; ++level) {
+			for (auto node = producerListTails[level].load(std::memory_order_acquire); node != nullptr; node = node->next) {
+				auto ptr = node->producer.load(std::memory_order_acquire);
+				if (ptr != nullptr && ptr->size_approx() > 0) {
+					return true;
 				}
 			}
 		}
-		
-		std::uint32_t delta = globalOffset - token.lastKnownGlobalOffset;
-		if (delta >= prodCount) {
-			delta = delta % prodCount;
-		}
-		for (std::uint32_t i = 0; i != delta; ++i) {
-			token.desiredProducer = static_cast<ProducerBase*>(token.desiredProducer)->next_prod();
-			if (token.desiredProducer == nullptr) {
-				token.desiredProducer = tail;
+		return false;
+	}
+	
+	inline bool update_current_producer_after_rotation(consumer_token_t& token)
+	{
+		// Ah, there's been a rotation (or a level change), figure out where we
+		// should be! Pick the highest-priority level that appears non-empty,
+		// falling back to the highest-priority level with any producers at all,
+		// then spread consumers across that level's producers by their offset.
+		ProducerListNode* levelTail = nullptr;
+		std::uint32_t levelProducerCount = 0;
+		ProducerListNode* fallbackTail = nullptr;
+		std::uint32_t fallbackProducerCount = 0;
+		for (size_t level = 0; level != PRIORITY_LEVELS && levelTail == nullptr; ++level) {
+			auto tail = producerListTails[level].load(std::memory_order_acquire);
+			std::uint32_t count = 0;
+			bool nonEmpty = false;
+			for (auto node = tail; node != nullptr; node = node->next) {
+				auto ptr = node->producer.load(std::memory_order_acquire);
+				if (ptr != nullptr) {
+					++count;
+					nonEmpty = nonEmpty || ptr->size_approx() > 0;
+				}
+			}
+			if (nonEmpty) {
+				levelTail = tail;
+				levelProducerCount = count;
+			}
+			else if (count != 0 && fallbackTail == nullptr) {
+				fallbackTail = tail;
+				fallbackProducerCount = count;
 			}
 		}
+		if (levelTail == nullptr) {
+			levelTail = fallbackTail;
+			levelProducerCount = fallbackProducerCount;
+		}
+		if (levelTail == nullptr) {
+			return false;
+		}
 		
+		auto globalOffset = globalExplicitConsumerOffset.load(std::memory_order_relaxed);
+		std::uint32_t offset = (token.initialOffset + globalOffset) % levelProducerCount;
+		ProducerBase* desired = nullptr;
+		ProducerBase* first = nullptr;
+		for (auto node = levelTail; node != nullptr; node = node->next) {
+			auto ptr = node->producer.load(std::memory_order_acquire);
+			if (ptr == nullptr) {
+				continue;
+			}
+			if (first == nullptr) {
+				first = ptr;
+			}
+			if (offset == 0) {
+				desired = ptr;
+				break;
+			}
+			--offset;
+		}
+		if (desired == nullptr) {
+			// A node was vacated between the counting pass and this one
+			desired = first;
+		}
+		if (desired == nullptr) {
+			return false;
+		}
+		
+		token.desiredProducer = desired;
 		token.lastKnownGlobalOffset = globalOffset;
-		token.currentProducer = token.desiredProducer;
+		token.currentProducer = desired;
 		token.itemsConsumedFromCurrent = 0;
 		return true;
 	}
@@ -1714,6 +1891,29 @@ private:
 #endif
 	
 	///////////////////////////
+	// Producer list node
+	///////////////////////////
+	
+	// A node in one of the per-priority-level producer lists. The node is not
+	// the sub-queue itself; it merely points to one. This indirection allows a
+	// sub-queue to be detached from its node and re-attached at a different
+	// level (see demote_producer). A node with a null `producer` is vacant and
+	// may be reused for any producer being moved to its level. Nodes are never
+	// unlinked from their list until the queue is destroyed.
+	struct ProducerListNode
+	{
+		ProducerListNode(ProducerBase* producer_, size_t level_)
+			: producer(producer_), next(nullptr), level(level_)
+		{
+		}
+		
+		std::atomic<ProducerBase*> producer;	// null when vacant
+		ProducerListNode* next;					// immutable once the node is linked into a list
+		size_t const level;						// immutable
+	};
+	
+	
+	///////////////////////////
 	// Producer base
 	///////////////////////////
 	
@@ -1725,6 +1925,7 @@ private:
 			dequeueOptimisticCount(0),
 			dequeueOvercommit(0),
 			tailBlock(nullptr),
+			listNode(nullptr),
 			isExplicit(isExplicit_),
 			parent(parent_)
 		{
@@ -1754,8 +1955,6 @@ private:
 			}
 		}
 		
-		inline ProducerBase* next_prod() const { return static_cast<ProducerBase*>(next); }
-		
 		inline size_t size_approx() const
 		{
 			auto tail = tailIndex.load(std::memory_order_relaxed);
@@ -1774,6 +1973,13 @@ private:
 		Block* tailBlock;
 		
 	public:
+		// The list node currently (or last) holding this producer. Only the
+		// producer's sole mover (a live-token holder demoting it, or the thread
+		// that claimed it via the `inactive` CAS) may update it; other threads
+		// may read it as a heuristic traversal anchor and can observe a slightly
+		// stale value, which is benign (nodes are never freed while the queue
+		// is alive, and a node never changes its list or level).
+		std::atomic<ProducerListNode*> listNode;
 		bool isExplicit;
 		ConcurrentQueue* parent;
 		
@@ -3168,7 +3374,12 @@ private:
 					block = block->freeListNext.load(std::memory_order_relaxed);
 				}
 				
-				for (auto ptr = q->producerListTail.load(std::memory_order_acquire); ptr != nullptr; ptr = ptr->next_prod()) {
+				for (size_t level = 0; level != PRIORITY_LEVELS; ++level) {
+				for (auto node = q->producerListTails[level].load(std::memory_order_acquire); node != nullptr; node = node->next) {
+					auto ptr = node->producer.load(std::memory_order_acquire);
+					if (ptr == nullptr) {
+						continue;
+					}
 					bool implicit = dynamic_cast<ImplicitProducer*>(ptr) != nullptr;
 					stats.implicitProducers += implicit ? 1 : 0;
 					stats.explicitProducers += implicit ? 0 : 1;
@@ -3220,6 +3431,7 @@ private:
 						}
 					}
 				}
+				}
 				
 				auto freeOnInitialPool = q->initialBlockPoolIndex.load(std::memory_order_relaxed) >= q->initialBlockPoolSize ? 0 : q->initialBlockPoolSize - q->initialBlockPoolIndex.load(std::memory_order_relaxed);
 				stats.allocatedBlocks += freeOnInitialPool;
@@ -3246,18 +3458,115 @@ private:
 	// Producer list manipulation
 	//////////////////////////////////	
 	
+	// Tries to claim a vacant node at the given level for the given producer.
+	// On success the producer is published at that node (with its listNode
+	// back-pointer already updated) and the node is returned; the caller is
+	// responsible for vacating the producer's previous node, if any.
+	ProducerListNode* try_claim_vacant_node(ProducerBase* producer, size_t level)
+	{
+		for (auto node = producerListTails[level].load(std::memory_order_acquire); node != nullptr; node = node->next) {
+			if (node->producer.load(std::memory_order_relaxed) != nullptr) {
+				continue;
+			}
+			// Set the back-pointer optimistically before publishing, so that
+			// anybody who finds the producer through this node sees it set
+			producer->listNode.store(node, std::memory_order_relaxed);
+			ProducerBase* expected = nullptr;
+			if (node->producer.compare_exchange_strong(expected, producer, std::memory_order_release, std::memory_order_relaxed)) {
+				return node;
+			}
+		}
+		return nullptr;
+	}
+	
+	// Allocates a fresh node holding the given producer and pushes it onto the
+	// given level's list. Returns nullptr if memory allocation fails. As above,
+	// vacating the producer's previous node is the caller's responsibility.
+	ProducerListNode* allocate_and_push_node(ProducerBase* producer, size_t level)
+	{
+		auto node = create<ProducerListNode>(producer, level);
+		if (node == nullptr) {
+			return nullptr;
+		}
+		producer->listNode.store(node, std::memory_order_relaxed);
+		auto prevTail = producerListTails[level].load(std::memory_order_relaxed);
+		do {
+			node->next = prevTail;
+		} while (!producerListTails[level].compare_exchange_weak(prevTail, node, std::memory_order_release, std::memory_order_relaxed));
+		return node;
+	}
+	
+	// Tries to move `producer` (whose current node is `fromNode`) into a node at
+	// the given level that is occupied by an *inactive* sub-queue, by swapping:
+	// the inactive sub-queue moves into `fromNode`. The caller must be the
+	// producer's sole mover. Ordering is chosen so that `producer` -- the live
+	// sub-queue -- is never unreachable; the inactive one may be missed by
+	// concurrent scans for the brief window between the two stores, which stays
+	// within the queue's "appeared empty at the time checked" semantics.
+	bool try_swap_with_inactive_producer(ProducerBase* producer, ProducerListNode* fromNode, size_t level)
+	{
+		for (auto node = producerListTails[level].load(std::memory_order_acquire); node != nullptr; node = node->next) {
+			auto other = node->producer.load(std::memory_order_acquire);
+			if (other == nullptr || other == producer || !other->inactive.load(std::memory_order_relaxed)) {
+				continue;
+			}
+			// Claim exclusive ownership of the inactive sub-queue with the same
+			// CAS that recycling uses; winning it locks out recyclers (and it
+			// has no token, so there is no competing demoter)
+			bool expected = true;
+			if (!other->inactive.compare_exchange_strong(expected, /* desired */ false, std::memory_order_acquire, std::memory_order_relaxed)) {
+				continue;
+			}
+			// Verify it still occupies this node (it may have been recycled and
+			// moved between our load and the claim) while publishing ourselves
+			ProducerBase* expectedOther = other;
+			if (node->producer.compare_exchange_strong(expectedOther, producer, std::memory_order_release, std::memory_order_relaxed)) {
+				producer->listNode.store(node, std::memory_order_relaxed);
+				other->listNode.store(fromNode, std::memory_order_relaxed);
+				fromNode->producer.store(other, std::memory_order_release);
+				other->inactive.store(true, std::memory_order_release);
+				return true;
+			}
+			// It moved away in the meantime; release it and keep looking
+			other->inactive.store(true, std::memory_order_release);
+		}
+		return false;
+	}
+	
 	ProducerBase* recycle_or_create_producer(bool isExplicit)
 	{
 #ifdef MCDBGQ_NOLOCKFREE_IMPLICITPRODHASH
 		debug::DebugLock lock(implicitProdMutex);
 #endif
-		// Try to re-use one first
-		for (auto ptr = producerListTail.load(std::memory_order_acquire); ptr != nullptr; ptr = ptr->next_prod()) {
-			if (ptr->inactive.load(std::memory_order_relaxed) && ptr->isExplicit == isExplicit) {
-				bool expected = true;
-				if (ptr->inactive.compare_exchange_strong(expected, /* desired */ false, std::memory_order_acquire, std::memory_order_relaxed)) {
-					// We caught one! It's been marked as activated, the caller can have it
-					return ptr;
+		// Try to re-use one first, scanning the levels top-down so that a
+		// producer already at the top level is preferred over a demoted one
+		for (size_t level = 0; level != PRIORITY_LEVELS; ++level) {
+			for (auto node = producerListTails[level].load(std::memory_order_acquire); node != nullptr; node = node->next) {
+				auto ptr = node->producer.load(std::memory_order_acquire);
+				if (ptr == nullptr || ptr->isExplicit != isExplicit) {
+					continue;
+				}
+				if (ptr->inactive.load(std::memory_order_relaxed)) {
+					bool expected = true;
+					if (ptr->inactive.compare_exchange_strong(expected, /* desired */ false, std::memory_order_acquire, std::memory_order_relaxed)) {
+						// We caught one! It's been marked as activated, the caller can
+						// have it -- but not before it's moved back to the top level,
+						// so that its new owner starts out at the highest priority.
+						// Having won the claim, we are its sole mover.
+						auto fromNode = ptr->listNode.load(std::memory_order_relaxed);
+						if (fromNode->level != 0) {
+							auto newNode = try_claim_vacant_node(ptr, 0);
+							if (newNode == nullptr) {
+								newNode = allocate_and_push_node(ptr, 0);
+							}
+							if (newNode != nullptr) {
+								fromNode->producer.store(nullptr, std::memory_order_release);
+							}
+							// If allocation failed the producer simply stays at its
+							// current level; degraded but safe
+						}
+						return ptr;
+					}
 				}
 			}
 		}
@@ -3272,13 +3581,17 @@ private:
 			return nullptr;
 		}
 		
-		producerCount.fetch_add(1, std::memory_order_relaxed);
+		// Add it to the top level's lock-free list, reusing a vacant node if possible
+		auto node = try_claim_vacant_node(producer, 0);
+		if (node == nullptr) {
+			node = allocate_and_push_node(producer, 0);
+			if (node == nullptr) {
+				destroy(producer);
+				return nullptr;
+			}
+		}
 		
-		// Add it to the lock-free list
-		auto prevTail = producerListTail.load(std::memory_order_relaxed);
-		do {
-			producer->next = prevTail;
-		} while (!producerListTail.compare_exchange_weak(prevTail, producer, std::memory_order_release, std::memory_order_relaxed));
+		producerCount.fetch_add(1, std::memory_order_relaxed);
 		
 #ifdef MOODYCAMEL_QUEUE_INTERNAL_DEBUG
 		if (producer->isExplicit) {
@@ -3303,8 +3616,13 @@ private:
 		// After another instance is moved-into/swapped-with this one, all the
 		// producers we stole still think their parents are the other queue.
 		// So fix them up!
-		for (auto ptr = producerListTail.load(std::memory_order_relaxed); ptr != nullptr; ptr = ptr->next_prod()) {
-			ptr->parent = this;
+		for (size_t level = 0; level != PRIORITY_LEVELS; ++level) {
+			for (auto node = producerListTails[level].load(std::memory_order_relaxed); node != nullptr; node = node->next) {
+				auto ptr = node->producer.load(std::memory_order_relaxed);
+				if (ptr != nullptr) {
+					ptr->parent = this;
+				}
+			}
 		}
 	}
 	
@@ -3660,6 +3978,13 @@ private:
 		return p != nullptr ? new (p) U(std::forward<A1>(a1)) : nullptr;
 	}
 
+	template<typename U, typename A1, typename A2>
+	static inline U* create(A1&& a1, A2&& a2)
+	{
+		void* p = aligned_malloc<U>(sizeof(U));
+		return p != nullptr ? new (p) U(std::forward<A1>(a1), std::forward<A2>(a2)) : nullptr;
+	}
+
 	template<typename U>
 	static inline void destroy(U* p)
 	{
@@ -3669,7 +3994,7 @@ private:
 	}
 
 private:
-	std::atomic<ProducerBase*> producerListTail;
+	std::array<std::atomic<ProducerListNode*>, PRIORITY_LEVELS> producerListTails;
 	std::atomic<std::uint32_t> producerCount;
 	
 	std::atomic<size_t> initialBlockPoolIndex;
