@@ -670,7 +670,7 @@ public:
 				ASSERT_OR_FAIL(q.try_dequeue(item));
 				ASSERT_OR_FAIL(item == i + 1);
 			}
-			ASSERT_OR_FAIL(!q.try_dequeue(item));z
+			ASSERT_OR_FAIL(!q.try_dequeue(item));
 		}
 		
 		Traits4::reset();
@@ -5152,7 +5152,7 @@ void printTests(ConcurrentQueueTests const& tests)
 
 
 // Basic test harness
-#if !defined(TARGET_OS_IPHONE) || !TARGET_OS_IPHONE
+#if !defined(TARGET_OS_IPHONE)
 int main(int argc, char** argv)
 {
 	bool disablePrompt = false;
