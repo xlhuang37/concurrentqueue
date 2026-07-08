@@ -680,7 +680,7 @@ public:
 			ASSERT_OR_FAIL(Traits4::malloc_count() == 1);
 			
 			q.enqueue_bulk(arr1234, 4);
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);		// Two for producer, one for block index
 			
 			int item;
 			for (int i = 0; i != 4; ++i) {
@@ -697,7 +697,7 @@ public:
 			ASSERT_OR_FAIL(Traits2::malloc_count() == 1);
 			
 			ASSERT_OR_FAIL(!q.try_enqueue_bulk(arr123, 3));
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);		// Still has to allocate implicit producer and block index
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);		// Still has to allocate implicit producer and block index
 			
 			int item;
 			ASSERT_OR_FAIL(!q.try_dequeue(item));
@@ -718,7 +718,7 @@ public:
 			ASSERT_OR_FAIL(Traits2::malloc_count() == 1);
 			
 			q.enqueue_bulk(arr1234, 4);
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);		// Two for producer, one for block index
 			
 			int item;
 			for (int i = 0; i != 4; ++i) {
@@ -737,7 +737,7 @@ public:
 			ASSERT_OR_FAIL(q.enqueue(0));
 			
 			ASSERT_OR_FAIL(q.enqueue_bulk(arr1234, 4));
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);		// One for producer, one for block index, one for block
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 5);		// Two for producer, one for block index, one for block
 			
 			int item;
 			for (int i = 0; i != 5; ++i) {
@@ -756,7 +756,7 @@ public:
 			ASSERT_OR_FAIL(q.enqueue(0));
 			
 			ASSERT_OR_FAIL(q.enqueue_bulk(arr1234, 4));
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);		// Two for producer, one for block index
 			
 			int item;
 			for (int i = 0; i != 5; ++i) {
@@ -773,10 +773,10 @@ public:
 			ASSERT_OR_FAIL(Traits2::malloc_count() == 1);
 			
 			ASSERT_OR_FAIL(q.enqueue(17));
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);		// Two for producer, one for block index
 			
 			ASSERT_OR_FAIL(!q.try_enqueue_bulk(arr123456, 6));
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);
 			
 			int item;
 			ASSERT_OR_FAIL(q.try_dequeue(item));
@@ -791,7 +791,7 @@ public:
 			ASSERT_OR_FAIL(Traits2::malloc_count() == 1);
 			
 			ASSERT_OR_FAIL(q.try_enqueue_bulk(arr123, 0));
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);		// Two for producer, one for block index
 			
 			int item;
 			ASSERT_OR_FAIL(!q.try_dequeue(item));
@@ -806,10 +806,10 @@ public:
 			ASSERT_OR_FAIL(Traits2::malloc_count() == 1);
 			
 			ProducerToken tok(q);
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);		// Two for producer, one for block index
 			
 			q.enqueue_bulk(tok, arr123, 3);
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);		// One for block
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 5);		// One for block
 			
 			int item;
 			for (int i = 0; i != 3; ++i) {
@@ -826,10 +826,10 @@ public:
 			ASSERT_OR_FAIL(Traits4::malloc_count() == 1);
 			
 			ProducerToken tok(q);
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);		// Two for producer, one for block index
 			
 			q.enqueue_bulk(tok, arr1234, 4);
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);
 			
 			int item;
 			for (int i = 0; i != 4; ++i) {
@@ -846,10 +846,10 @@ public:
 			ASSERT_OR_FAIL(Traits2::malloc_count() == 1);
 			
 			ProducerToken tok(q);
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);		// Two for producer, one for block index
 			
 			ASSERT_OR_FAIL(!q.try_enqueue_bulk(tok, arr123, 3));
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);
 			
 			int item;
 			ASSERT_OR_FAIL(!q.try_dequeue(item));
@@ -860,7 +860,7 @@ public:
 				ASSERT_OR_FAIL(item == i + 1);
 			}
 			ASSERT_OR_FAIL(!q.try_dequeue(item));
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);
 		}
 		
 		Traits2::reset();
@@ -870,10 +870,10 @@ public:
 			ASSERT_OR_FAIL(Traits2::malloc_count() == 1);
 			
 			ProducerToken tok(q);
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);		// Two for producer, one for block index
 			
 			q.enqueue_bulk(tok, arr1234, 4);
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);
 			
 			int item;
 			for (int i = 0; i != 4; ++i) {
@@ -890,12 +890,12 @@ public:
 			ASSERT_OR_FAIL(Traits4::malloc_count() == 1);
 			
 			ProducerToken tok(q);
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);		// Two for producer, one for block index
 			
 			ASSERT_OR_FAIL(q.enqueue(tok, 0));
 			
 			ASSERT_OR_FAIL(q.enqueue_bulk(tok, arr1234, 4));
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);		// One for block
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 5);		// One for block
 			
 			int item;
 			for (int i = 0; i != 5; ++i) {
@@ -912,12 +912,12 @@ public:
 			ASSERT_OR_FAIL(Traits4::malloc_count() == 1);
 			
 			ProducerToken tok(q);
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);		// Two for producer, one for block index
 			
 			ASSERT_OR_FAIL(q.enqueue(tok, 0));
 			
 			ASSERT_OR_FAIL(q.enqueue_bulk(tok, arr1234, 4));
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);
 			
 			int item;
 			for (int i = 0; i != 5; ++i) {
@@ -934,13 +934,13 @@ public:
 			ASSERT_OR_FAIL(Traits2::malloc_count() == 1);
 			
 			ProducerToken tok(q);
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);		// Two for producer, one for block index
 			
 			ASSERT_OR_FAIL(q.enqueue(tok, 17));
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);
 			
 			ASSERT_OR_FAIL(!q.try_enqueue_bulk(tok, arr123456, 6));
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);
 			
 			int item;
 			ASSERT_OR_FAIL(q.try_dequeue(item));
@@ -955,10 +955,10 @@ public:
 			ASSERT_OR_FAIL(Traits2::malloc_count() == 1);
 			
 			ProducerToken tok(q);
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);		// Two for producer, one for block index
 			
 			ASSERT_OR_FAIL(q.try_enqueue_bulk(tok, arr123, 0));
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);
 			
 			int item;
 			ASSERT_OR_FAIL(!q.try_dequeue(item));
@@ -976,7 +976,7 @@ public:
 			ASSERT_OR_FAIL(Traits4::malloc_count() == 1);
 			
 			ProducerToken tok(q);
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 3);		// One for producer, one for block index
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);		// Two for producer, one for block index
 			
 			for (int i = 0; i != 5; ++i) {
 				ASSERT_OR_FAIL(q.enqueue(tok, i));
@@ -988,17 +988,17 @@ public:
 			}
 			ASSERT_OR_FAIL(!q.try_dequeue(item));
 			
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);
 			
 			ASSERT_OR_FAIL(q.enqueue_bulk(tok, arr123456, 6));
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);
 			
 			for (int i = 0; i != 6; ++i) {
 				ASSERT_OR_FAIL(q.try_dequeue(item));
 				ASSERT_OR_FAIL(item == i + 1);
 			}
 			ASSERT_OR_FAIL(!q.try_dequeue(item));
-			ASSERT_OR_FAIL(Traits4::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits4::malloc_count() == 4);
 		}
 		
 		return true;
@@ -1020,7 +1020,7 @@ public:
 			
 			{
 				ProducerToken tok(q);
-				ASSERT_OR_FAIL(Traits::malloc_count() == 3);		// one for producer, one for its block index
+				ASSERT_OR_FAIL(Traits::malloc_count() == 4);		// Two for producer, one for its block index
 				ASSERT_OR_FAIL(Traits::free_count() == 0);
 				
 				// Enqueue one item too many (force extra block allocation)
@@ -1028,17 +1028,17 @@ public:
 					ASSERT_OR_FAIL(q.enqueue(tok, i));
 				}
 				
-				ASSERT_OR_FAIL(Traits::malloc_count() == 4);
+				ASSERT_OR_FAIL(Traits::malloc_count() == 5);
 				ASSERT_OR_FAIL(Traits::free_count() == 0);
 				
 				// Still room for one more...
 				ASSERT_OR_FAIL(q.enqueue(tok, 9));
-				ASSERT_OR_FAIL(Traits::malloc_count() == 4);
+				ASSERT_OR_FAIL(Traits::malloc_count() == 5);
 				ASSERT_OR_FAIL(Traits::free_count() == 0);
 				
 				// No more room without further allocations
 				ASSERT_OR_FAIL(!q.try_enqueue(tok, 10));
-				ASSERT_OR_FAIL(Traits::malloc_count() == 4);
+				ASSERT_OR_FAIL(Traits::malloc_count() == 5);
 				ASSERT_OR_FAIL(Traits::free_count() == 0);
 				
 				// Check items were enqueued properly
@@ -1056,8 +1056,8 @@ public:
 			ASSERT_OR_FAIL(Traits::free_count() == 0);
 		}
 		
-		ASSERT_OR_FAIL(Traits::malloc_count() == 4);
-		ASSERT_OR_FAIL(Traits::free_count() == 4);
+		ASSERT_OR_FAIL(Traits::malloc_count() == 5);
+		ASSERT_OR_FAIL(Traits::free_count() == 5);
 		
 		// Implicit
 		Traits::reset();
@@ -1067,7 +1067,7 @@ public:
 			
 			ASSERT_OR_FAIL(q.enqueue(39));
 			
-			ASSERT_OR_FAIL(Traits::malloc_count() == 3);		// one for producer, one for its block index
+			ASSERT_OR_FAIL(Traits::malloc_count() == 4);		// Two for producer, one for its block index
 			ASSERT_OR_FAIL(Traits::free_count() == 0);
 			
 			// Enqueue one item too many (force extra block allocation)
@@ -1075,17 +1075,17 @@ public:
 				ASSERT_OR_FAIL(q.enqueue(i));
 			}
 			
-			ASSERT_OR_FAIL(Traits::malloc_count() == 4);
+			ASSERT_OR_FAIL(Traits::malloc_count() == 5);
 			ASSERT_OR_FAIL(Traits::free_count() == 0);
 			
 			// Still room for one more...
 			ASSERT_OR_FAIL(q.enqueue(8));
-			ASSERT_OR_FAIL(Traits::malloc_count() == 4);
+			ASSERT_OR_FAIL(Traits::malloc_count() == 5);
 			ASSERT_OR_FAIL(Traits::free_count() == 0);
 			
 			// No more room without further allocations
 			ASSERT_OR_FAIL(!q.try_enqueue(9));
-			ASSERT_OR_FAIL(Traits::malloc_count() == 4);
+			ASSERT_OR_FAIL(Traits::malloc_count() == 5);
 			ASSERT_OR_FAIL(Traits::free_count() == 0);
 			
 			// Check items were enqueued properly
@@ -1102,8 +1102,8 @@ public:
 			ASSERT_OR_FAIL(Traits::free_count() == 1);
 		}
 		
-		ASSERT_OR_FAIL(Traits::malloc_count() == 4);
-		ASSERT_OR_FAIL(Traits::free_count() == 4);
+		ASSERT_OR_FAIL(Traits::malloc_count() == 5);
+		ASSERT_OR_FAIL(Traits::free_count() == 5);
 		
 		// Implicit
 		RecycleTraits::reset();
@@ -1113,7 +1113,7 @@ public:
 			
 			ASSERT_OR_FAIL(q.enqueue(39));
 			
-			ASSERT_OR_FAIL(RecycleTraits::malloc_count() == 3);		// one for producer, one for its block index
+			ASSERT_OR_FAIL(RecycleTraits::malloc_count() == 4);		// Two for producer, one for its block index
 			ASSERT_OR_FAIL(RecycleTraits::free_count() == 0);
 			
 			// Enqueue one item too many (force extra block allocation)
@@ -1121,17 +1121,17 @@ public:
 				ASSERT_OR_FAIL(q.enqueue(i));
 			}
 			
-			ASSERT_OR_FAIL(RecycleTraits::malloc_count() == 4);
+			ASSERT_OR_FAIL(RecycleTraits::malloc_count() == 5);
 			ASSERT_OR_FAIL(RecycleTraits::free_count() == 0);
 			
 			// Still room for one more...
 			ASSERT_OR_FAIL(q.enqueue(8));
-			ASSERT_OR_FAIL(RecycleTraits::malloc_count() == 4);
+			ASSERT_OR_FAIL(RecycleTraits::malloc_count() == 5);
 			ASSERT_OR_FAIL(RecycleTraits::free_count() == 0);
 			
 			// No more room without further allocations
 			ASSERT_OR_FAIL(!q.try_enqueue(9));
-			ASSERT_OR_FAIL(RecycleTraits::malloc_count() == 4);
+			ASSERT_OR_FAIL(RecycleTraits::malloc_count() == 5);
 			ASSERT_OR_FAIL(RecycleTraits::free_count() == 0);
 			
 			// Check items were enqueued properly
@@ -1147,8 +1147,8 @@ public:
 			ASSERT_OR_FAIL(!q.try_dequeue(item));
 			ASSERT_OR_FAIL(RecycleTraits::free_count() == 0);
 		}
-		ASSERT_OR_FAIL(RecycleTraits::malloc_count() == 4);
-		ASSERT_OR_FAIL(RecycleTraits::free_count() == 4);
+		ASSERT_OR_FAIL(RecycleTraits::malloc_count() == 5);
+		ASSERT_OR_FAIL(RecycleTraits::free_count() == 5);
 
 		// Super-aligned
 		Traits::reset();
@@ -1157,7 +1157,7 @@ public:
 			ConcurrentQueue<VeryAligned, Traits> q(7);
 			ASSERT_OR_FAIL(q.enqueue(39));
 
-			ASSERT_OR_FAIL(Traits::malloc_count() == 3);		// one for producer, one for its block index
+			ASSERT_OR_FAIL(Traits::malloc_count() == 4);		// Two for producer, one for its block index
 			ASSERT_OR_FAIL(Traits::free_count() == 0);
 			ASSERT_OR_FAIL(VeryAligned::errors == 0);
 
@@ -1167,18 +1167,18 @@ public:
 				ASSERT_OR_FAIL(VeryAligned::errors == 0);
 			}
 
-			ASSERT_OR_FAIL(Traits::malloc_count() == 4);
+			ASSERT_OR_FAIL(Traits::malloc_count() == 5);
 			ASSERT_OR_FAIL(Traits::free_count() == 0);
 
 			// Still room for one more...
 			ASSERT_OR_FAIL(q.enqueue(8));
-			ASSERT_OR_FAIL(Traits::malloc_count() == 4);
+			ASSERT_OR_FAIL(Traits::malloc_count() == 5);
 			ASSERT_OR_FAIL(Traits::free_count() == 0);
 			ASSERT_OR_FAIL(VeryAligned::errors == 0);
 
 			// No more room without further allocations
 			ASSERT_OR_FAIL(!q.try_enqueue(9));
-			ASSERT_OR_FAIL(Traits::malloc_count() == 4);
+			ASSERT_OR_FAIL(Traits::malloc_count() == 5);
 			ASSERT_OR_FAIL(Traits::free_count() == 0);
 			ASSERT_OR_FAIL(VeryAligned::errors == 0);
 
@@ -1198,8 +1198,8 @@ public:
 			ASSERT_OR_FAIL(VeryAligned::errors == 0);
 		}
 
-		ASSERT_OR_FAIL(Traits::malloc_count() == 4);
-		ASSERT_OR_FAIL(Traits::free_count() == 4);
+		ASSERT_OR_FAIL(Traits::malloc_count() == 5);
+		ASSERT_OR_FAIL(Traits::free_count() == 5);
 
 		return true;
 	}
@@ -1235,7 +1235,7 @@ public:
 			ASSERT_OR_FAIL(t0.valid());
 		}
 
-		ASSERT_OR_FAIL(Traits::malloc_count() == 5);		// 2 for each producer + 1 for initial block pool
+		ASSERT_OR_FAIL(Traits::malloc_count() == 7);		// 3 for each producer + 1 for initial block pool
 		ASSERT_OR_FAIL(Traits::free_count() == Traits::malloc_count());
 		
 		return true;
@@ -1268,7 +1268,7 @@ public:
 			ASSERT_OR_FAIL(q.try_dequeue_from_producer(t4, item) && item == 4 && !q.try_dequeue_from_producer(t4, item));
 		}
 		
-		ASSERT_OR_FAIL(Traits::malloc_count() == 11);		// 2 for each producer + 1 for initial block pool
+		ASSERT_OR_FAIL(Traits::malloc_count() == 16);		// 3 for each producer + 1 for initial block pool
 		ASSERT_OR_FAIL(Traits::free_count() == Traits::malloc_count());
 		
 		// Implicit
@@ -1359,7 +1359,7 @@ public:
 			}
 		}
 		
-		ASSERT_OR_FAIL(Traits::malloc_count() == 9);		// 2 for max number of live producers + 1 for initial block pool
+		ASSERT_OR_FAIL(Traits::malloc_count() == 13);		// 3 for max number of live producers + 1 for initial block pool
 		ASSERT_OR_FAIL(Traits::free_count() == Traits::malloc_count());
 		
 #ifdef MOODYCAMEL_CPP11_THREAD_LOCAL_SUPPORTED
@@ -1372,18 +1372,18 @@ public:
 			
 			SimpleThread t0([&]() { q.enqueue(0); });
 			t0.join();
-			ASSERT_OR_FAIL(Traits::malloc_count() == 3);		// Implicit producer
+			ASSERT_OR_FAIL(Traits::malloc_count() == 4);		// Implicit producer
 			
 			SimpleThread t1([&]() { q.enqueue(1); });
 			t1.join();
-			ASSERT_OR_FAIL(Traits::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits::malloc_count() == 4);
 			
 			SimpleThread t2([&]() { q.enqueue(2); });
 			t2.join();
-			ASSERT_OR_FAIL(Traits::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits::malloc_count() == 4);
 			
 			q.enqueue(3);
-			ASSERT_OR_FAIL(Traits::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits::malloc_count() == 4);
 			
 			int item;
 			int i = 0;
@@ -1392,7 +1392,7 @@ public:
 				++i;
 			}
 			ASSERT_OR_FAIL(i == 4);
-			ASSERT_OR_FAIL(Traits::malloc_count() == 3);
+			ASSERT_OR_FAIL(Traits::malloc_count() == 4);
 			
 			std::vector<SimpleThread> threads(MAX_THREADS);
 			for (int rep = 0; rep != 2; ++rep) {
@@ -1501,7 +1501,7 @@ public:
 			}
 		}
 		
-		ASSERT_OR_FAIL(SmallBlocks::malloc_count() == 3);
+		ASSERT_OR_FAIL(SmallBlocks::malloc_count() == 4);
 		ASSERT_OR_FAIL(SmallBlocks::free_count() == SmallBlocks::malloc_count());
 		
 		
@@ -1539,7 +1539,7 @@ public:
 			}
 		}
 		
-		ASSERT_OR_FAIL(HugeBlocks::malloc_count() == 3);
+		ASSERT_OR_FAIL(HugeBlocks::malloc_count() == 4);
 		ASSERT_OR_FAIL(HugeBlocks::free_count() == HugeBlocks::malloc_count());
 		
 		
@@ -1576,7 +1576,7 @@ public:
 			}
 		}
 		
-		ASSERT_OR_FAIL(SmallBlocks::malloc_count() == 3);
+		ASSERT_OR_FAIL(SmallBlocks::malloc_count() == 4);
 		ASSERT_OR_FAIL(SmallBlocks::free_count() == SmallBlocks::malloc_count());
 		
 		HugeBlocks::reset();
@@ -1611,7 +1611,7 @@ public:
 			}
 		}
 		
-		ASSERT_OR_FAIL(HugeBlocks::malloc_count() == 3);
+		ASSERT_OR_FAIL(HugeBlocks::malloc_count() == 4);
 		ASSERT_OR_FAIL(HugeBlocks::free_count() == HugeBlocks::malloc_count());
 		
 		return true;
@@ -1820,7 +1820,12 @@ public:
 			}
 		}
 		
-		ASSERT_OR_FAIL(Traits::malloc_count() == 1 + 2 + 254 + 7);
+		// Malloc breakdown:
+        //   2 : ExplicitProducer allocation
+        //   2 : Initial blocks (capacity 8 / block size 4)
+        // 254 : Additional blocks (1024 items = 256 total blocks - 2 initial)
+        //   7 : Block index resizes (capacity doubling from 2 up to 256)
+		ASSERT_OR_FAIL(Traits::malloc_count() == 2 + 2 + 254 + 7); 
 		ASSERT_OR_FAIL(Traits::free_count() == Traits::malloc_count());
 		
 		ASSERT_OR_FAIL(Foo::createCount() == 2048);
@@ -1843,7 +1848,7 @@ public:
 			}
 		}
 		
-		ASSERT_OR_FAIL(Traits::malloc_count() == 1 + 2 + 254 + 6);
+		ASSERT_OR_FAIL(Traits::malloc_count() == 2 + 2 + 254 + 6);
 		ASSERT_OR_FAIL(Traits::free_count() == Traits::malloc_count());
 		
 		ASSERT_OR_FAIL(Foo::createCount() == 2048);
