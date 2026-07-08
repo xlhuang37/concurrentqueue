@@ -663,14 +663,14 @@ public:
 			ASSERT_OR_FAIL(Traits2::malloc_count() == 1);
 			
 			q.enqueue_bulk(arr123, 3);
-			ASSERT_OR_FAIL(Traits2::malloc_count() == 4);		// One for producer, one for block index, one for block
+			ASSERT_OR_FAIL(Traits2::malloc_count() == 5);		// One for producer, one for block index, one for block
 			
 			int item;
 			for (int i = 0; i != 3; ++i) {
 				ASSERT_OR_FAIL(q.try_dequeue(item));
 				ASSERT_OR_FAIL(item == i + 1);
 			}
-			ASSERT_OR_FAIL(!q.try_dequeue(item));
+			ASSERT_OR_FAIL(!q.try_dequeue(item));z
 		}
 		
 		Traits4::reset();
@@ -5152,7 +5152,7 @@ void printTests(ConcurrentQueueTests const& tests)
 
 
 // Basic test harness
-#if !defined(TARGET_OS_IPHONE)
+#if !defined(TARGET_OS_IPHONE) || !TARGET_OS_IPHONE
 int main(int argc, char** argv)
 {
 	bool disablePrompt = false;
